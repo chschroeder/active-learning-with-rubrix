@@ -1,0 +1,3 @@
+rubrix==0.7.0
+small-text==1.0.0b3
+datasets==2.1.0
