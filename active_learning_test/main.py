@@ -1,8 +1,8 @@
 import os
-import time
+import datetime
 
 import datasets
-import numpy as np
+import numpy
 import rubrix as rb
 
 from pathlib import Path
@@ -12,6 +12,7 @@ from active_learning_test.active_learner import (
     convert_to_small_text_dataset,
     initialize_active_learner
 )
+from active_learning_test.rb_streams import DatasetQueryStream
 
 
 def main():
@@ -57,25 +58,21 @@ def main_loop(active_learner, trec_dataset, label_names):
     log_next_batch(batch_idx, trec_dataset, queried_indices)
 
     try:
-        while True:  # TODO: this is ugly, we need a better abort condition here
-            df = rb.load(f'active-learning-test-batch-{batch_idx}', query='status:*')
-            if (df['status'] == 'Validated').all():
+        stream = DatasetQueryStream(
+            dataset="active-learning-test-batch",
+            unique=True,
+            query="status:Validated and metadata.batch_id:{batch_id}",
+            batch_id=batch_idx,
+        )
+        for data in stream(start_from=datetime.datetime.utcnow(), batch_size=len(queried_indices)):
+            new_labels = [label_name_to_idx[r.annotation] for r in data]
+            active_learner.update(numpy.array(new_labels))
 
-                new_labels = df['annotation'].apply(lambda x: label_name_to_idx[x]).to_numpy()
-                print(new_labels)
-                active_learner.update(new_labels)
+            batch_idx += +1
+            stream.query_params = {"batch_id": batch_idx}
 
-                batch_idx += + 1
-                queried_indices = active_learner.query()
-                log_next_batch(batch_idx, trec_dataset, queried_indices)
-
-            else:
-                time.sleep(3)
-
-            print(df)
-            print(df['status'])
-            print(df['prediction'])
-            print(df['annotation'])
+            queried_indices = active_learner.query()
+            log_next_batch(batch_idx, trec_dataset, queried_indices)
 
     except KeyboardInterrupt as e:
         print('\n-- Exit initiated.')
@@ -90,14 +87,18 @@ def log_next_batch(batch_idx, trec_dataset, queried_indices):
     texts = [trec_dataset['train']['text'][i] for i in queried_indices]
     records = [
         rb.TextClassificationRecord(
-            id=idx,
+            id=f"{batch_idx}_{idx}",
             text=text,
-            prediction=[(label, 0.0)
-                        for label in trec_dataset['train'].features['label-coarse'].names]
+            prediction=[
+                (label, 0.0)
+                for label in trec_dataset["train"].features["label-coarse"].names
+            ],
+            metadata={"batch_id": batch_idx},
         )
         for idx, text in enumerate(texts)
     ]
-    rb.log(records, name=f'active-learning-test-batch-{batch_idx}')
+    print(f"Logging records for batch {batch_idx}")
+    rb.log(records, name=f"active-learning-test-batch")
 
 
 if __name__ == '__main__':
